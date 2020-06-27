@@ -6,7 +6,8 @@
 #include <ArduinoJson.h>
 #include <UniversalTelegramBot.h>
 #include <HTTPClient.h>
-#include "BLEDevice.h"
+#include <NimBLEDevice.h>
+//#include "BLEDevice.h"
 #include "time.h"
 #include "Config.h"
 #include "mbedtls/ccm.h"
@@ -85,7 +86,6 @@ class FlowerData: public Sensor {
       char lux[5] = "-";
       char temp[5] = "-";
       char conduct[5] = "-";
-      char bat[5] = "-";
 
       if(moisture != std::numeric_limits<uint8_t>::max()) {
         snprintf(moist, sizeof(moist), "%d", moisture);
@@ -103,17 +103,12 @@ class FlowerData: public Sensor {
         snprintf(conduct, sizeof(conduct), "%d", conductivity);
       }
 
-      if(battery != std::numeric_limits<uint8_t>::max()) {
-        snprintf(bat, sizeof(bat), "%d", battery);
-      }
-
       snprintf(output, outputSize, 
-        "Guave: %s%% Feuchtigkeit, %slux, %s°C, %smS/cm, %s%% Batterie\nPflanzenlampe: %s\n",
+        "Guave: %s%% Feuchtigkeit, %slux, %s°C, %smS/cm\nPflanzenlampe: %s\n",
         moist,
         lux,
         temp,
         conduct,
-        bat,
         plantPowerStatus ? "an" : "aus"
       );
     }
@@ -126,7 +121,6 @@ class ThermoData: public Sensor {
     void toString(char* output, uint16_t outputSize) {
       char temp[5] = "-";
       char humid[5] = "-";
-      char bat[5] = "-";
 
       if(temperature != std::numeric_limits<float>::max()) {
         snprintf(temp, sizeof(temp), "%.1f", temperature);
@@ -136,16 +130,11 @@ class ThermoData: public Sensor {
         snprintf(humid, sizeof(humid), "%d", humidity);
       }
 
-      if(battery != std::numeric_limits<uint8_t>::max()) {
-        snprintf(bat, sizeof(bat), "%d", battery);
-      }
-
       snprintf(output, outputSize,
-        "%s: %s°C, %s%%, (%s%% Batterie)\n",
+        "%s: %s°C, %s%%\n",
         name,
         temp,
-        humid,
-        bat
+        humid
       );
     }
 };
@@ -204,21 +193,22 @@ void startWifi() {
 }
 
 class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
-    void onResult(BLEAdvertisedDevice advertisedDevice) {
+    void onResult(BLEAdvertisedDevice* advertisedDevice) {
+    //void onResult(BLEAdvertisedDevice advertisedDevice1) {
+      //BLEAdvertisedDevice* advertisedDevice = &advertisedDevice1;
       timerWrite(watchdogTimer, 0);
 
-      if(!advertisedDevice.haveServiceData()) {
+      if(!advertisedDevice->haveServiceData()) {
         return;
       }
 
-      if(advertisedDevice.getServiceData().length() <= 12) {
+      if(advertisedDevice->getServiceData().length() <= 12) {
         return;
       }
 
-      if(!(advertisedDevice.getServiceData().at(2) == 0x98 && advertisedDevice.getServiceData().at(3) == 0x00) &&   // FLORA
-          !(advertisedDevice.getServiceData().at(2) == 0x5b && advertisedDevice.getServiceData().at(3) == 0x04) &&  // LYWSD02MMC
-          !(advertisedDevice.getServiceData().at(2) == 0x5b && advertisedDevice.getServiceData().at(3) == 0x05)) { // LYWSD03MMC
-        //Serial.println("Unknown device?!");
+      if(!(advertisedDevice->getServiceData().at(2) == 0x98 && advertisedDevice->getServiceData().at(3) == 0x00) &&  // FLORA
+          !(advertisedDevice->getServiceData().at(2) == 0x5b && advertisedDevice->getServiceData().at(3) == 0x04) && // LYWSD02MMC
+          !(advertisedDevice->getServiceData().at(2) == 0x5b && advertisedDevice->getServiceData().at(3) == 0x05)) { // LYWSD03MMC
         return;
       }
 
@@ -226,30 +216,31 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
       // [4] Frame counter
       // [12] Data type
       // [14] Data length
-      std::string payloadString = advertisedDevice.getServiceData();
+      std::string payloadString = advertisedDevice->getServiceData();
       uint8_t* payload = (uint8_t*) payloadString.c_str();
       size_t payloadLength = payloadString.length();
 
       Sensor* sensor = nullptr;
       for(uint8_t i = 0; i < thermometerCount; i++) {
-        if(thermometers[i].address.equals(advertisedDevice.getAddress())) {
+        if(thermometers[i].address.equals(advertisedDevice->getAddress())) {
           sensor = &thermometers[i];
           break;
         }
       }
 
-      if(sensor == nullptr && guava.address.equals(advertisedDevice.getAddress())) {
+      if(sensor == nullptr && guava.address.equals(advertisedDevice->getAddress())) {
         sensor = &guava;
       }
 
       if(sensor == nullptr) {
-        Serial.printf("Unknown device: %s\n", advertisedDevice.getAddress().toString().c_str());
         return;
       }
 
       if(sensor->lastFrameCount == payload[4]) {
         return;
       }
+
+      printLocalTime();
 
       Serial.printf("%s ", sensor->name);
 
@@ -271,8 +262,8 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         uint8_t cipherPos = (payloadLength == 19) ? 5 : 11;
 
         uint8_t iv[16] = {0};
-        memcpy(iv, payload + 5, 6);               // MAC in reverse
-        memcpy(iv + 6, payload + 2, 3);             // sensor type (2) + packet id (1)
+        memcpy(iv, payload + 5, 6);                     // MAC in reverse
+        memcpy(iv + 6, payload + 2, 3);                 // sensor type (2) + packet id (1)
         memcpy(iv + 9, payload + payloadLength - 7, 3); // payload counter
 
         mbedtls_ccm_context ctx;
@@ -337,6 +328,7 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 
       sensor->lastFrameCount = payload[4];
       time(&(sensor->lastUpdate));
+      pBLEScan->clearResults();
     }
 };
 
@@ -375,7 +367,7 @@ void printLocalTime()
     Serial.println("Failed to obtain time");
     return;
   }
-  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+  Serial.print(&timeinfo, "%A, %B %d %Y %H:%M:%S: ");
 }
 
 boolean isQuietTime() {
@@ -459,7 +451,7 @@ void applyRules() {
     time(&plantLastUpdate);
   }
 
-  if(!isQuietTime()) {
+  if(isQuietTime()) {
     return;
   }
 
@@ -577,24 +569,27 @@ boolean sendNotification(const char *msg) {
 }
 
 boolean sendStatus(String recipient) {
-    char msgBuffer[800];
+    char msgBuffer[1000];
     
     guava.toString(msgBuffer, sizeof(msgBuffer));
 
-    char thermoBuffer[100];
+    char tmpBuffer[100];
     for(uint8_t i = 0; i < thermometerCount; i++) {
-      thermometers[i].toString(thermoBuffer, sizeof(thermoBuffer));
-      strcat(msgBuffer, thermoBuffer);
+      thermometers[i].toString(tmpBuffer, sizeof(tmpBuffer));
+      strcat(msgBuffer, tmpBuffer);
     }
+    snprintf(tmpBuffer, sizeof(tmpBuffer), "Heap: %d\n", ESP.getFreeHeap());
+    strcat(msgBuffer, tmpBuffer);
     return bot.sendMessage(recipient, String(msgBuffer), "");
 }
 
 void scanBLE(void * parameter) {
   pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MiDeviceCallbacks(), true);
+  //pBLEScan->setAdvertisedDeviceCallbacks(new MiDeviceCallbacks(), true);
+  pBLEScan->setAdvertisedDeviceCallbacks(new MiDeviceCallbacks());
   pBLEScan->setActiveScan(false);
-  pBLEScan->setInterval(100);
-  pBLEScan->setWindow(99);
+  /*pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);*/
   pBLEScan->start(0);
 }
 
@@ -618,17 +613,15 @@ void setup() {
 
   configTzTime(timeZone, ntpServer);
   printLocalTime();
+
+  bot.sendMessage(chatIds[0], "Reboot", "");
   
   Serial.printf("Is quiet time: %d\n", isQuietTime());
 
   bot.longPoll = 30;
 
   BLEDevice::init("Collector");
-  /*pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MiDeviceCallbacks(), true);
-  pBLEScan->setActiveScan(false);
-  pBLEScan->setInterval(100);
-  pBLEScan->setWindow(99);*/
+
   xTaskCreate(&scanBLE, "BLETask", 10000, NULL, 1, NULL); 
 }
 
@@ -637,5 +630,5 @@ void loop() {
 
   handleTelegram();
 
-  //delay((std::min(botCheckInterval, plantCheckInterval)));
+  delay((std::min(botCheckInterval, plantCheckInterval)));
 }
