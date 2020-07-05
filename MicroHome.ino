@@ -34,8 +34,8 @@ const uint8_t noAlarmAfter = 22;
 
 const uint16_t sensorTimeout = 60*60;
 
-const uint8_t plantOnHour = 6;
-const uint8_t plantOffHour = 19;
+const uint8_t plantOnHour = 5;
+const uint8_t plantOffHour = 22;
 const uint32_t plantMinLux = 1000;
 #define PLANT_ON_URL "http://192.168.1.181/cm?cmnd=Power%20On"
 #define PLANT_OFF_URL "http://192.168.1.181/cm?cmnd=Power%20Off"
@@ -86,6 +86,12 @@ class FlowerData: public Sensor {
       char lux[5] = "-";
       char temp[5] = "-";
       char conduct[5] = "-";
+      char time[6] = "-";
+
+      if(lastUpdate != 0) {
+        struct tm* tm = localtime(&lastUpdate);
+        strftime(time, sizeof(time), "%H:%M", tm);
+      }
 
       if(moisture != std::numeric_limits<uint8_t>::max()) {
         snprintf(moist, sizeof(moist), "%d", moisture);
@@ -104,7 +110,8 @@ class FlowerData: public Sensor {
       }
 
       snprintf(output, outputSize, 
-        "Guave: %s%% Feuchtigkeit, %slux, %s°C, %smS/cm\nPflanzenlampe: %s\n",
+        "Guave (%s): %s%% Feuchtigkeit, %slux, %s°C, %smS/cm\nPflanzenlampe: %s\n",
+        time,
         moist,
         lux,
         temp,
@@ -121,6 +128,12 @@ class ThermoData: public Sensor {
     void toString(char* output, uint16_t outputSize) {
       char temp[5] = "-";
       char humid[5] = "-";
+      char time[6] = "-";
+
+      if(lastUpdate != 0) {
+        struct tm* tm = localtime(&lastUpdate);
+        strftime(time, sizeof(time), "%H:%M", tm);
+      }
 
       if(temperature != std::numeric_limits<float>::max()) {
         snprintf(temp, sizeof(temp), "%.1f", temperature);
@@ -131,8 +144,9 @@ class ThermoData: public Sensor {
       }
 
       snprintf(output, outputSize,
-        "%s: %s°C, %s%%\n",
+        "%s (%s): %s°C, %s%%\n",
         name,
+        time,
         temp,
         humid
       );
@@ -393,22 +407,14 @@ boolean isQuietTime() {
 boolean setPlantPower(boolean power) {
   timerWrite(watchdogTimer, 0);
 
-  if(power == plantPowerStatus) {
-    Serial.println("Power status already set");
-    return true;
-  }
   if(power) {
-    return httpGetPlantPower(PLANT_ON_URL, &plantPowerStatus);
+    return httpGetPlantPower(PLANT_ON_URL);
   } else {
-    return httpGetPlantPower(PLANT_OFF_URL, &plantPowerStatus);
+    return httpGetPlantPower(PLANT_OFF_URL);
   }
 }
 
-boolean updatePlantPower() {
-  return httpGetPlantPower(PLANT_STATUS_URL, &plantPowerStatus);
-}
-
-boolean httpGetPlantPower(const char* url, const boolean *status) {
+boolean httpGetPlantPower(const char* url) {
   HTTPClient http;
   http.begin(url);
   Serial.printf("Executing get: %s\n", url);
@@ -443,7 +449,7 @@ void applyRules() {
     tm timeinfo;
     if(!getLocalTime(&timeinfo)){
       Serial.println("Failed to obtain time");
-    } else if(timeinfo.tm_hour >= plantOnHour && timeinfo.tm_hour < plantOffHour && guava.light < plantMinLux) {
+    } else if(timeinfo.tm_hour >= plantOnHour && timeinfo.tm_hour < plantOffHour && (guava.light < plantMinLux || guava.light == std::numeric_limits<uint32_t>::max())) {
       setPlantPower(true);
     } else {
       setPlantPower(false);
