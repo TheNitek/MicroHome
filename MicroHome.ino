@@ -32,6 +32,7 @@ const uint8_t NO_ALARM_BEFORE_WEEKEND = 8;
 const uint8_t NO_ALARM_AFTER = 22;
 
 const uint16_t SENSOR_TIMEOUT = 60*60;
+const uint16_t MIN_TIME_BETWEEN_TIMEOUT_ALERTS = 60*60;
 
 const int BLE_WDT_TIMEOUT = 5*60;
 hw_timer_t *bleWatchdogTimer = nullptr;
@@ -44,6 +45,8 @@ RTC_DATA_ATTR time_t botLastUpdate = 0;   //last time messages' scan has been do
 const char *CHAT_IDS[] = {"302777211", "1070698297"};
 
 const uint16_t POWER_CHECK_INTERVAL = 5*60;
+
+enum maybe_t { M_TRUE, M_MAYBE, M_FALSE};
 
 class PowerSwitch {
   public:
@@ -227,6 +230,7 @@ class ThermoData: public Sensor {
     void toString(char* output, uint16_t outputSize) {
       char temp[5] = "-";
       char humid[5] = "-";
+      char bat[4] = "-";
       char time[6] = "-";
 
       if(lastUpdate != 0) {
@@ -242,12 +246,17 @@ class ThermoData: public Sensor {
         snprintf(humid, sizeof(humid), "%d", humidity);
       }
 
+      if(battery != std::numeric_limits<uint8_t>::max()) {
+        snprintf(bat, sizeof(bat), "%d", battery);
+      }
+
       snprintf(output, outputSize,
-        "%s (%s): %s°C, %s%%\n",
+        "%s (%s): %s°C, %s%%, Batt %s%%\n",
         NAME,
         time,
         temp,
-        humid
+        humid,
+        bat
       );
     }
 };
@@ -261,9 +270,10 @@ RTC_DATA_ATTR FlowerData guava("Guave", "c4:7c:8d:65:e9:92");
 RTC_DATA_ATTR ThermoData thermometers[] = {
   ThermoData("Küche", "a4:c1:38:46:e6:72"),
   ThermoData("Wohnzimmer", "e7:2e:01:42:a1:1f"),
-  ThermoData("Schlafzimmer", "a4:c1:38:9a:f6:a1", BIND_BED),
-  ThermoData("Bad", "a4:c1:38:18:93:8a", BIND_BATH),
-  ThermoData("Kinderzimmer", "a4:c1:38:0f:0d:43", BIND_KID)
+  ThermoData("Schlafzimmer", "a4:c1:38:9a:f6:a1"),
+  ThermoData("Bad", "a4:c1:38:18:93:8a"),
+  ThermoData("Klo", "a4:c1:38:f7:53:53"),
+  ThermoData("Kinderzimmer", "a4:c1:38:22:6a:22")
 };
 uint8_t thermometerCount = sizeof(thermometers)/(sizeof(thermometers[0]));
 
@@ -273,6 +283,7 @@ RTC_DATA_ATTR struct {
   time_t guavaWaterLow = 0;
   time_t guavaWaterHigh = 0;
   time_t vent = 0;
+  time_t noData = 0;
 } notificationStatus;
 
 void IRAM_ATTR resetModule() {
@@ -290,6 +301,7 @@ void startWifi() {
   wifiManager.setDebugOutput(false);
   wifiManager.setEnableConfigPortal(false);
   wifiManager.setTimeout(60);
+  wifiManager.setConnectRetries(3);
   uint8_t i = 0;
   while(!wifiManager.autoConnect() && i++ < 3) {
     Serial.println("Retry autoConnect");
@@ -349,7 +361,6 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
       }
 
       printLocalTime();
-
       Serial.printf("%s ", sensor->NAME);
 
 
@@ -378,6 +389,7 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
           Serial.printf(" %d %d\n", humidity, battery);
           return;
         }
+        Serial.println();
         return;
       }
 
@@ -386,7 +398,7 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         // Encrypted
 
         if(sensor->bindkey.empty()) {
-          Serial.printf("Got encrypted payload but no key for %s", sensor->NAME);
+          Serial.printf("Got encrypted payload but no key for %s\n", sensor->NAME);
           return;
         }
 
@@ -438,19 +450,17 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 
       if ((dataType == 0x04) && (dataLength == 2)) {
         sensor->temperature = (uint16_t(payload[offset+3]) | (uint16_t(payload[offset+4]) << 8)) / 10.0f;
-        Serial.printf("Temp: %2.1f ", sensor->temperature);
+        Serial.printf("Temp: %2.1f° ", sensor->temperature);
       } else if ((dataType == 0x06) && (dataLength == 2)) {
         sensor->humidity = (uint16_t(payload[offset+3]) | (uint16_t(payload[offset+4]) << 8)) / 10;
-        Serial.printf("Humid: %d ", sensor->humidity);
+        Serial.printf("Humid: %d%% ", sensor->humidity);
       } else if ((dataType == 0x07) && (dataLength == 3)) {
         sensor->light = uint32_t(payload[offset+3]) | (uint32_t(payload[offset+4]) << 8) | (uint32_t(payload[offset+5]) << 16);
         Serial.print("Light: "); Serial.print(sensor->light); Serial.print(" ");
-      }
-      else if ((dataType == 0x08) && (dataLength == 1)) {
+      } else if ((dataType == 0x08) && (dataLength == 1)) {
         sensor->moisture = payload[offset+3];
         Serial.printf("Moisture: %d%% ", sensor->moisture);
-      }
-      else if ((dataType == 0x09) && (dataLength == 2)) {
+      } else if ((dataType == 0x09) && (dataLength == 2)) {
         sensor->conductivity = uint16_t(payload[offset+3]) | (uint16_t(payload[offset+4]) << 8);
         Serial.printf("Conductivity: %d ", sensor->moisture);
       } else if ((dataType == 0x0A) && (dataLength == 1)) {
@@ -459,8 +469,8 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
       } else if ((dataType == 0x0D) && (dataLength == 4)) {
         sensor->temperature = (uint16_t(payload[offset+3]) | (uint16_t(payload[offset+4]) << 8)) / 10.0f;
         sensor->humidity = (uint16_t(payload[offset+5]) | (uint16_t(payload[offset+6]) << 8)) / 10.0;
-        Serial.printf("Temp: %2.1f ", sensor->temperature);
-        Serial.printf("Humid: %d ", sensor->humidity);
+        Serial.printf("Temp: %2.1f° ", sensor->temperature);
+        Serial.printf("Humid: %d%% ", sensor->humidity);
       } else {
         Serial.printf("unknown: %02x: ", dataType);
         for(uint8_t i=0; i<payloadLength; i++) {
@@ -484,7 +494,7 @@ void handleTelegram() {
       httpErrors = 0;
       for (int i = 0; i < numNewMessages; i++) {
         Serial.print("ChatId: "); Serial.println(bot.messages[i].chat_id);
-        if (bot.messages[i].text == "/status") {
+        if (bot.messages[i].text.startsWith("/status")) {
           sendStatus(bot.messages[i].chat_id);
           //strcpy(statusRequestor, bot.messages[i].chat_id.c_str());
           //bot.sendChatAction(statusRequestor, "typing");
@@ -543,19 +553,17 @@ void applyRules() {
 
   // Only notify if data have been received at least once
   if(guava.moisture != std::numeric_limits<uint8_t>::max()) {
-    if(guava.moisture < 15) {
+    if(guava.moisture < 20) {
       if(difftime(time(NULL), notificationStatus.guavaWaterLow) > MIN_TIME_BETWEEN_ALERTS) {
         char msg[50];
-        snprintf(msg, sizeof(msg), "Die Guave hat durst! (Feuchtigkeit: %d%%)", guava.moisture);
+        snprintf(msg, sizeof(msg), "Die Guave hat Durst! (Feuchtigkeit: %d%%)", guava.moisture);
         if(sendNotification(msg)) {
           time(&notificationStatus.guavaWaterLow);
         }
       }
-    } else {
-      if(notificationStatus.guavaWaterLow != 0) {
-        sendNotification("Der Guave hat genug zu trinken");
-        notificationStatus.guavaWaterLow = 0;
-      }
+    } else if((notificationStatus.guavaWaterLow != 0) && ((difftime(time(NULL), notificationStatus.guavaWaterLow) > MIN_TIME_BETWEEN_ALERTS) || (guava.moisture >= 20))) {
+      sendNotification("Der Guave hat genug zu trinken");
+      notificationStatus.guavaWaterLow = 0;
     }
     if(guava.moisture > 60) {
       if(difftime(time(NULL), notificationStatus.guavaWaterHigh) > MIN_TIME_BETWEEN_ALERTS) {
@@ -565,11 +573,9 @@ void applyRules() {
           time(&notificationStatus.guavaWaterHigh);
         }
       }
-    } else {
-      if(notificationStatus.guavaWaterHigh != 0 && guava.moisture <= 56) {
-        sendNotification("Der Guave ertrinkt nicht mehr");
-        notificationStatus.guavaWaterHigh = 0;
-      }
+    } else if(notificationStatus.guavaWaterHigh != 0 && ((difftime(time(NULL), notificationStatus.guavaWaterLow) > MIN_TIME_BETWEEN_ALERTS) || (guava.moisture <= 56))) {
+      sendNotification("Der Guave ertrinkt nicht mehr");
+      notificationStatus.guavaWaterHigh = 0;
     }
   }
   if(guava.temperature != std::numeric_limits<float>::max()) {
@@ -602,42 +608,42 @@ void applyRules() {
       }
     }
   }
-  if((guava.lastUpdate > 0) && (difftime(time(NULL), guava.lastUpdate) > SENSOR_TIMEOUT)) {
+  if((guava.lastUpdate > 0) && (difftime(time(NULL), guava.lastUpdate) > SENSOR_TIMEOUT) && (difftime(time(NULL), notificationStatus.vent) > MIN_TIME_BETWEEN_TIMEOUT_ALERTS)) {
     if(sendNotification("Die Guave liefert keine Daten")) {
-      // TODO maybe store another timestamp so we can repeat the notification at some time
-      guava.lastUpdate = 0;
+      time(&notificationStatus.noData);
     }
   }
 
 
-  boolean vent = false;
+  maybe_t vent = M_FALSE;
   char msgBuffer[400] = "Bitte lüften!\n";
   char sensorBuffer[100];
   for(uint8_t i = 0; i < thermometerCount; i++) {
     if(thermometers[i].humidity == std::numeric_limits<uint8_t>::max()) {
       continue;
     }
-    if(thermometers[i].humidity > 60) {
-      vent = true;
+    if(thermometers[i].humidity > 58) {
+      // Avoid toggling by adding a 2% tollerance
+      vent = (vent == M_TRUE || thermometers[i].humidity > 60) ? M_TRUE : M_MAYBE;
       thermometers[i].toString(sensorBuffer, sizeof(sensorBuffer));
       strcat(msgBuffer, sensorBuffer);
     }
-    if((thermometers[i].lastUpdate > 0) && (difftime(time(NULL), thermometers[i].lastUpdate) > SENSOR_TIMEOUT)) {
+    if((thermometers[i].lastUpdate > 0) && (difftime(time(NULL), thermometers[i].lastUpdate) > SENSOR_TIMEOUT) && (difftime(time(NULL), notificationStatus.vent) > MIN_TIME_BETWEEN_TIMEOUT_ALERTS)) {
       snprintf(sensorBuffer, sizeof(sensorBuffer), "%s liefert keine Daten",thermometers[i].NAME);
       if(sendNotification(sensorBuffer)) {
-        // TODO maybe store another timestamp so we can repeat the notification at some time
-        thermometers[i].lastUpdate = 0;
+        time(&notificationStatus.noData);
       }
     }
   }
-  if(vent) {
+
+  if(vent == M_TRUE) {
     if(difftime(time(NULL), notificationStatus.vent) > MIN_TIME_BETWEEN_ALERTS) {
       if(sendNotification(msgBuffer)) {
         time(&notificationStatus.vent);
       }
     }
   } else {
-    if(notificationStatus.vent != 0) {
+    if(notificationStatus.vent != 0 && (vent == M_FALSE || difftime(time(NULL), notificationStatus.vent) > MIN_TIME_BETWEEN_ALERTS)) {
       sendNotification("Erfolgreich gelüftet!");
       notificationStatus.vent = 0;
     }
