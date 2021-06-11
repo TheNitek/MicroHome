@@ -251,7 +251,7 @@ class ThermoData: public Sensor {
       }
 
       snprintf(output, outputSize,
-        "%s (%s): %s°C, %s%%, Batt %s%%\n",
+        "%s (%s): %s°C, %s%%, (%s%%)\n",
         NAME,
         time,
         temp,
@@ -561,7 +561,8 @@ void applyRules() {
           time(&notificationStatus.guavaWaterLow);
         }
       }
-    } else if((notificationStatus.guavaWaterLow != 0) && ((difftime(time(NULL), notificationStatus.guavaWaterLow) > MIN_TIME_BETWEEN_ALERTS) || (guava.moisture >= 20))) {
+    // Checking for 25% to avoid toggling and watering will increase moisture way more
+    } else if((notificationStatus.guavaWaterLow != 0) && ((difftime(time(NULL), notificationStatus.guavaWaterLow) > MIN_TIME_BETWEEN_ALERTS) || (guava.moisture >= 25))) {
       sendNotification("Der Guave hat genug zu trinken");
       notificationStatus.guavaWaterLow = 0;
     }
@@ -622,11 +623,13 @@ void applyRules() {
     if(thermometers[i].humidity == std::numeric_limits<uint8_t>::max()) {
       continue;
     }
-    if(thermometers[i].humidity > 58) {
-      // Avoid toggling by adding a 2% tollerance
-      vent = (vent == M_TRUE || thermometers[i].humidity > 60) ? M_TRUE : M_MAYBE;
+    if(thermometers[i].humidity > 60) {
+      vent = M_TRUE;
       thermometers[i].toString(sensorBuffer, sizeof(sensorBuffer));
       strcat(msgBuffer, sensorBuffer);
+    } else if(thermometers[i].humidity > 58) {
+      // Avoid toggling by adding a 2% tollerance
+      vent = M_MAYBE;
     }
     if((thermometers[i].lastUpdate > 0) && (difftime(time(NULL), thermometers[i].lastUpdate) > SENSOR_TIMEOUT) && (difftime(time(NULL), notificationStatus.vent) > MIN_TIME_BETWEEN_TIMEOUT_ALERTS)) {
       snprintf(sensorBuffer, sizeof(sensorBuffer), "%s liefert keine Daten",thermometers[i].NAME);
@@ -722,6 +725,7 @@ void setup() {
   timerAlarmEnable(bleWatchdogTimer);                          //enable interrupt
 
   //esp_log_level_set("wifi", ESP_LOG_INFO); 
+  client.setInsecure();
 
   startWifi();
 
