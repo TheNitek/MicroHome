@@ -574,7 +574,7 @@ void applyRules() {
           time(&notificationStatus.guavaWaterHigh);
         }
       }
-    } else if(notificationStatus.guavaWaterHigh != 0 && ((difftime(time(NULL), notificationStatus.guavaWaterLow) > MIN_TIME_BETWEEN_ALERTS) || (guava.moisture <= 56))) {
+    } else if(notificationStatus.guavaWaterHigh != 0 && ((difftime(time(NULL), notificationStatus.guavaWaterHigh) > MIN_TIME_BETWEEN_ALERTS) || (guava.moisture <= 56))) {
       sendNotification("Der Guave ertrinkt nicht mehr");
       notificationStatus.guavaWaterHigh = 0;
     }
