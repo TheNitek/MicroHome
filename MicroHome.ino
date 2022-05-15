@@ -462,7 +462,7 @@ class MiDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
         Serial.printf("Moisture: %d%% ", sensor->moisture);
       } else if ((dataType == 0x09) && (dataLength == 2)) {
         sensor->conductivity = uint16_t(payload[offset+3]) | (uint16_t(payload[offset+4]) << 8);
-        Serial.printf("Conductivity: %d ", sensor->moisture);
+        Serial.printf("Conductivity: %d ", sensor->conductivity);
       } else if ((dataType == 0x0A) && (dataLength == 1)) {
         sensor->battery = payload[offset+3];
         Serial.printf("Battery: %d%% ", sensor->battery);
